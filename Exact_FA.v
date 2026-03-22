@@ -1,9 +1,14 @@
+`timescale 1ns/1ps
+
 module Exact_FA(
-    input a,
-    input b,
-    input c_in,
-    output sum,
-    output c_out
+    input  wire a,
+    input  wire b,
+    input  wire cin,
+    output wire sum,
+    output wire cout
 );
-    assign {c_out, sum} = a + b + c_in;
+
+assign sum  = a ^ b ^ cin;
+assign cout = (a & b) | (a & cin) | (b & cin);
+
 endmodule
