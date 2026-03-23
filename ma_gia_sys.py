@@ -1,33 +1,34 @@
-# 1. CÁC HÀM HỖ TRỢ BỘ CỘNG
+# ==========================================
+# 1. CÁC HÀM HỖ TRỢ BỘ CỘNG 
+# ==========================================
 def nfax(a_bit, b_bit, cin):
-    sum_bit = a_bit ^ b_bit ^ cin 
-    cout = a_bit & b_bit          
+    sum_bit = a_bit ^ b_bit ^ cin
+    cout = a_bit & b_bit 
     return sum_bit, cout
 
 def exact_fa(a_bit, b_bit, cin):
-    sum_bit = a_bit ^ b_bit ^ cin 
-    cout = (a_bit & b_bit) | (a_bit & cin) | (b_bit & cin) 
+    sum_bit = a_bit ^ b_bit ^ cin
+    cout = (a_bit & b_bit) | (a_bit & cin) | (b_bit & cin)
     return sum_bit, cout
 
 def adder8_hybrid(x, y, use_approx=True):
-    x_bits = [(x >> i) & 1 for i in range(8)]
-    y_bits = [(y >> i) & 1 for i in range(8)]
-    
     sum_bits = [0] * 8
-    carry = 0 
-    
+    carry = 0
     for i in range(8):
-        if use_approx and i < 2: 
-            sum_bits[i], carry = nfax(x_bits[i], y_bits[i], carry) 
-        else: 
-            sum_bits[i], carry = exact_fa(x_bits[i], y_bits[i], carry) 
+        x_bit = (x >> i) & 1
+        y_bit = (y >> i) & 1
+        if use_approx and i < 2:
+            sum_bits[i], carry = nfax(x_bit, y_bit, carry)
+        else:
+            sum_bits[i], carry = exact_fa(x_bit, y_bit, carry)
             
-    final_sum = sum(sum_bits[i] << i for i in range(8))
-    if final_sum >= 128:
-        final_sum -= 256
-    return final_sum
+    final_sum_unsigned = sum(sum_bits[i] << i for i in range(8))
+    # Ép kiểu về signed 8-bit (-128 đến 127)
+    return final_sum_unsigned - 256 if final_sum_unsigned >= 128 else final_sum_unsigned
 
+# ==========================================
 # 2. LỚP PROCESSING ELEMENT (PE)
+# ==========================================
 class PEMAC:
     def __init__(self, use_approx=True):
         self.use_approx = use_approx
@@ -40,96 +41,115 @@ class PEMAC:
 
     def compute_next_state(self, a_in, b_in, clear_acc):
         mult_result = a_in * b_in 
-        next_sum_unsigned = adder8_hybrid(self.sum_out, mult_result, self.use_approx) 
-        
-        self.next_a_out = a_in 
-        self.next_b_out = b_in 
-        if clear_acc:
-            self.next_sum_out = 0 
-        else:
-            self.next_sum_out = next_sum_unsigned 
+        next_sum = adder8_hybrid(self.sum_out, mult_result, self.use_approx)
+        self.next_a_out = a_in
+        self.next_b_out = b_in
+        self.next_sum_out = 0 if clear_acc else next_sum
 
     def update_registers(self):
         self.a_out = self.next_a_out
         self.b_out = self.next_b_out
         self.sum_out = self.next_sum_out
 
+# ==========================================
 # 3. LỚP SYSTOLIC ARRAY 4x4
+# ==========================================
 class SystolicArray4x4:
     def __init__(self, use_approx=True):
+        # Khởi tạo 16 PE độc lập
         self.pes = [[PEMAC(use_approx) for _ in range(4)] for _ in range(4)]
 
-    def clock_cycle(self, a_inputs, b_inputs, clear_acc):
+    def clock_cycle(self, a_inputs, b_inputs, clear_acc=False):
+        # Tính toán trạng thái tiếp theo cho toàn bộ lưới PE
         for i in range(4):
             for j in range(4):
                 a_in = a_inputs[i] if j == 0 else self.pes[i][j-1].a_out
                 b_in = b_inputs[j] if i == 0 else self.pes[i-1][j].b_out
                 self.pes[i][j].compute_next_state(a_in, b_in, clear_acc)
 
+        # Cập nhật thanh ghi đồng loạt (mô phỏng posedge clk)
         for i in range(4):
             for j in range(4):
-                self.pes[i][j].update_registers() 
+                self.pes[i][j].update_registers()
 
     def get_outputs(self):
         return [[self.pes[i][j].sum_out for j in range(4)] for i in range(4)]
 
-# 4. ĐOẠN MÃ CHẠY THỬ (TEST BENCH)
-if __name__ == "__main__":
-    # Khởi tạo mảng Systolic 4x4
-    # Đặt use_approx=False để xem kết quả tính toán chính xác tuyệt đối
-    # Đặt use_approx=True để xem tác động của bộ cộng lai (có sai số nhẹ)
-    sys_array = SystolicArray4x4(use_approx=False) 
-
-    # Định nghĩa ma trận đầu vào A (4x4)
-    matrix_A = [
-        [1, 2, 3, 4],
-        [2, 1, 1, 1],
-        [0, 1, 0, 2],
-        [1, 0, 1, 0]
-    ]
-
-    # Định nghĩa ma trận đầu vào B (4x4)
-    matrix_B = [
-        [1, 0, 2, 0],
-        [0, 1, 0, 1],
-        [1, 1, 1, 0],
-        [0, 0, 1, 1]
-    ]
-
-    print("=== BẮT ĐẦU MÔ PHỎNG NHÂN MA TRẬN ===")
+# ==========================================
+# 4. CHẠY KIỂM TRA (TESTBENCH)
+# ==========================================
+def run_test_case(matrix_A, matrix_B, test_name, expected_matrix=None, use_approx=True):
+    print(f"\n{'='*50}")
+    print(f" {test_name} ")
+    print(f" Cấu hình phần cứng: {'Approximate Adder (Sai số)' if use_approx else 'Exact Adder (Chính xác)'}")
+    print(f"{'='*50}")
     
-    # Một mảng NxN cần khoảng 3N-2 chu kỳ để hoàn thành tính toán.
-    # Với N=4, cần 10 chu kỳ. Chúng ta chạy 12 chu kỳ để thấy kết quả ổn định cuối cùng.
+    sys_array = SystolicArray4x4(use_approx=use_approx)
+    
+    # Một ma trận 4x4 mất tối đa 10 chu kỳ để hoàn tất. Chạy 12 chu kỳ để đảm bảo ổn định.
     TOTAL_CYCLES = 12 
 
     for t in range(TOTAL_CYCLES):
-        # Mảng chứa tín hiệu đầu vào tại chu kỳ t
         a_in_current = [0, 0, 0, 0]
         b_in_current = [0, 0, 0, 0]
 
-        # Nạp dữ liệu có độ trễ (Skewing)
+        # Nạp dữ liệu chéo (Data Skewing)
         for i in range(4):
-            # Hàng i của A trễ i chu kỳ
             if 0 <= t - i < 4:
                 a_in_current[i] = matrix_A[i][t - i]
                 
         for j in range(4):
-            # Cột j của B trễ j chu kỳ
             if 0 <= t - j < 4:
                 b_in_current[j] = matrix_B[t - j][j]
 
-        # Đưa tín hiệu vào mảng Systolic và chạy 1 chu kỳ clock
         sys_array.clock_cycle(a_in_current, b_in_current, clear_acc=False)
 
-        # In kết quả sau mỗi chu kỳ
-        print(f"\n--- Chu kỳ {t + 1} ---")
-        print(f"Input A đưa vào: {a_in_current}")
-        print(f"Input B đưa vào: {b_in_current}")
-        print("Trạng thái ma trận C hiện tại:")
-        for row in sys_array.get_outputs():
-            print(f"  {row}")
+    # Lấy kết quả
+    actual_output = sys_array.get_outputs()
+    
+    print("\n[ KẾT QUẢ TỪ SYSTOLIC ARRAY ]")
+    for row in actual_output:
+        print(" [" + ", ".join(f"{val:4}" for val in row) + " ]")
 
-    print("\n=== KẾT QUẢ CUỐI CÙNG ===")
-    print("Ma trận C (A x B) là:")
-    for row in sys_array.get_outputs():
-        print(row)
+    # In kết quả kỳ vọng nếu có
+    if expected_matrix:
+        print("\n[ KẾT QUẢ KỲ VỌNG (LÝ THUYẾT) ]")
+        for row in expected_matrix:
+            print(" [" + ", ".join(f"{val:4}" for val in row) + " ]")
+            
+        # Kiểm tra tính đúng đắn
+        is_match = actual_output == expected_matrix
+        print(f"\n=> ĐÁNH GIÁ: {'✅ KHỚP HOÀN TOÀN' if is_match else '❌ CÓ SAI SỐ (Do Approximate Adder hoặc Lỗi)'}")
+
+if __name__ == "__main__":
+    # Bạn đang thiết kế mạch với USE_APPROX = 1 theo file Verilog
+    USE_APPROX = True 
+
+    # --- TEST CASE 1: Ma trận ngẫu nhiên ---
+    A1 = [[1, -2, 3, 0], [-1, 2, -3, 1], [2, 0, -1, 4], [-2, 1, 1, -1]]
+    B1 = [[1, 0, -1, 2], [2, -1, 0, 0], [-2, 1, 1, 1], [1, 2, -1, -2]]
+    # Lý thuyết A1 x B1
+    Expected_C1 = [
+        [-9,  5,  2,  5],
+        [10, -3, -3, -7],
+        [ 8,  7, -7, -5],
+        [-3, -2,  4, -1]
+    ]
+    run_test_case(A1, B1, "TEST CASE 1: A1 x B1", Expected_C1, USE_APPROX)
+
+   # --- TEST CASE 2: I x B2 = B2 ---
+    A2 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    
+    # Đã thay đổi B2 để khớp đúng với dữ liệu trong testbench thực tế của bạn
+    B2 = [
+        [ 1,  0,  0,  0],
+        [-2,  2, -1,  1],
+        [ 1,  1,  1, -1],
+        [ 0,  0, -2,  2]
+    ]
+    run_test_case(A2, B2, "TEST CASE 2: A2(I) x B2 = B2", B2, USE_APPROX)
+
+    # --- TEST CASE 3: A3 x I = A3 ---
+    A3 = [[2, -1, 1, 0], [1, 2, -2, 1], [-1, 0, 2, -2], [0, 1, -1, 2]]
+    B3 = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    run_test_case(A3, B3, "TEST CASE 3: A3 x B3(I) = A3", A3, USE_APPROX)
